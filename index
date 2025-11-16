@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <base target="_top">
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background-color: #f8f9fa;
+    }
+
+    .container {
+      max-width: 600px;
+      margin-top: 5rem;
+    }
+
+    .card {
+      border: none;
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="card-body p-5">
+        <h1 class="card-title text-center mb-4">受注データ取込アプリ</h1>
+        <form id="uploadForm">
+          <div class="mb-3">
+            <label for="fileInput" class="form-label">テキストファイルを選択</label>
+            <input type="file" class="form-control" id="fileInput" accept=".txt,.csv" required>
+          </div>
+          <div class="d-grid">
+            <button type="submit" class="btn btn-primary btn-lg" id="submitButton">
+              <span id="buttonText">アップロードして取込</span>
+              <span class="spinner-border spinner-border-sm d-none" id="spinner" role="status" aria-hidden="true"></span>
+            </button>
+          </div>
+        </form>
+        <div id="status" class="mt-4"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    document.getElementById('uploadForm').addEventListener('submit', function(e) {
+      e.preventDefault();
+      const file = document.getElementById('fileInput').files[0];
+      if (!file) {
+        return;
+      }
+
+      // UIを処理中状態にする
+      const submitButton = document.getElementById('submitButton');
+      const buttonText = document.getElementById('buttonText');
+      const spinner = document.getElementById('spinner');
+      const statusDiv = document.getElementById('status');
+
+      submitButton.disabled = true;
+      buttonText.textContent = '処理中...';
+      spinner.classList.remove('d-none');
+      statusDiv.innerHTML = '';
+
+      // 文字コードを'Shift_JIS'に固定
+      const encoding = 'Shift_JIS';
+      const reader = new FileReader();
+      
+      reader.onload = function(event) {
+        const fileContent = event.target.result;
+
+        // サーバーサイドの関数を呼び出す
+        google.script.run
+          .withSuccessHandler(function(response) {
+            if (response.status === 'success') {
+              statusDiv.innerHTML = `
+                <div class="alert alert-success" role="alert">
+                  <strong>成功:</strong> データの取り込みが完了しました。<br>
+                  受注データ: ${response.ordersAdded}件<br>
+                  受注明細: ${response.detailsAdded}件
+                </div>`;
+            } else {
+               showError(response.message);
+            }
+            resetUi();
+          })
+          .withFailureHandler(function(error) {
+            showError(error.message);
+            resetUi();
+          })
+          .processCsvData(fileContent);
+      };
+      // Shift_JISでファイルをテキストとして読み込む
+      reader.readAsText(file, encoding); 
+    });
+
+    /**
+     * エラーメッセージを表示する関数
+     */
+    function showError(message) {
+      const statusDiv = document.getElementById('status');
+      statusDiv.innerHTML = `
+        <div class="alert alert-danger" role="alert">
+          <strong>エラー:</strong> ${message}
+        </div>`;
+    }
+
+    /**
+     * UIを初期状態に戻す関数
+     */
+    function resetUi() {
+      const submitButton = document.getElementById('submitButton');
+      const buttonText = document.getElementById('buttonText');
+      const spinner = document.getElementById('spinner');
+      
+      submitButton.disabled = false;
+      buttonText.textContent = 'アップロードして取込';
+      spinner.classList.add('d-none');
+      document.getElementById('fileInput').value = ''; // ファイル選択をリセット
+    }
+  </script>
+</body>
+
+</html>
+
