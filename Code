@@ -1,9 +1,9 @@
 /**
  * スプレッドシートIDとシート名を設定
  */
-const SPREADSHEET_ID = '1fQQCSwZj9Eo4D6ZOS9uIHCtz0jRX5ZyMrjePwnaEdlM';
-const ORDER_SHEET_NAME = '受注データ のコピー';
-const DETAIL_SHEET_NAME = '受注明細 のコピー';
+const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE';
+const ORDER_SHEET_NAME = '受注データ';
+const DETAIL_SHEET_NAME = '受注明細';
 const DELIVERY_MASTER_SHEET_NAME = '直送先マスタ'; // ■変更：直送先マスタのシート名
 
 /**
