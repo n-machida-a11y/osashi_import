@@ -1,46 +1,56 @@
 /**
- * スプレッドシートIDとシート名を設定
- */
+ * スプレッドシートIDとシート名を設定
+ */
 const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE';
 const ORDER_SHEET_NAME = '受注データ';
 const DETAIL_SHEET_NAME = '受注明細';
 const DELIVERY_MASTER_SHEET_NAME = '直送先マスタ'; // ■変更：直送先マスタのシート名
 
 /**
- * WebアプリのGETリクエストを処理し、HTMLを表示する
- */
+ * WebアプリのGETリクエストを処理し、HTMLを表示する
+ */
 function doGet(e) {
-  return HtmlService.createHtmlOutputFromFile('index')
-    .setTitle('受注データ取込アプリ');
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('受注データ取込アプリ');
 }
 
 /**
- * CSVデータを処理してスプレッドシートに書き込む
- * @param {string} csvData - フロントエンドから受け取ったテキストデータ
- * @return {object} 処理結果
- */
+ * CSVデータを処理してスプレッドシートに書き込む
+ * @param {string} csvData - フロントエンドから受け取ったテキストデータ
+ * @return {object} 処理結果
+ */
 function processCsvData(csvData) {
-  try {
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const orderSheet = ss.getSheetByName(ORDER_SHEET_NAME);
-    const detailSheet = ss.getSheetByName(DETAIL_SHEET_NAME);
-    const deliveryMasterSheet = ss.getSheetByName(DELIVERY_MASTER_SHEET_NAME); // ■変更：直送先マスタシートを取得
+  try {
+    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const orderSheet = ss.getSheetByName(ORDER_SHEET_NAME);
+    const detailSheet = ss.getSheetByName(DETAIL_SHEET_NAME);
+    const deliveryMasterSheet = ss.getSheetByName(DELIVERY_MASTER_SHEET_NAME); // ■変更：直送先マスタシートを取得
 
-    if (!orderSheet || !detailSheet || !deliveryMasterSheet) {
-      throw new Error('指定されたシートが見つかりません。（受注データ、受注明細、直送先マスタ）');
-    }
+    if (!orderSheet || !detailSheet || !deliveryMasterSheet) {
+      throw new Error('指定されたシートが見つかりません。（受注データ、受注明細、直送先マスタ）');
+    }
     
     // --- ■変更：直送先マスタの情報を読み込み、検索可能なMapを作成 ---
     const deliveryMasterMap = _createDeliveryMasterMap(deliveryMasterSheet);
 
     // --- GAS標準のCSVパーサーで全データを一括解析 ---
     const lines = csvData.trim().split(/\r\n|\n/);
-    if (lines.length < 3) {
-      throw new Error('CSVのデータ行が見つかりません。');
+    
+    // ■■■ 修正点 1 ■■■
+    // ヘッダー行とデータ行の最低2行が必要
+    if (lines.length < 2) { 
+      throw new Error('CSVのデータ行が見つかりません。(ヘッダー + データ1行以上が必要です)');
     }
-    const csvForParsing = lines.slice(1).join('\n');
-    const parsedData = Utilities.parseCsv(csvForParsing);
+    
+    // ■■■ 修正点 2 ■■■
+    // lines.slice(1) をやめて、csvData.trim() を直接パースする
+    // これでCSVの1行目がヘッダーとして扱われる
+    const parsedData = Utilities.parseCsv(csvData.trim());
+    
+    // 変更なし: parsedData[0]がヘッダーになる
     const textHeaders = parsedData[0].map(h => h.trim());
+    
+    // 変更なし: parsedData.slice(1)がデータ行になる
     const dataRowsAsObjects = parsedData.slice(1).map(row => {
         const rowData = {};
         textHeaders.forEach((header, i) => {
@@ -50,29 +60,29 @@ function processCsvData(csvData) {
     });
 
 
-    // --- 既存の受注Noとその行番号をマッピング ---
-    const lastOrderRow = orderSheet.getLastRow();
-    const existingOrderRows = new Map();
-    if (lastOrderRow > 1) {
-      const existingNosData = orderSheet.getRange(2, 1, lastOrderRow - 1, 1).getDisplayValues();
-      existingNosData.forEach((row, index) => {
-        if (row[0]) {
-          existingOrderRows.set(row[0].trim(), index + 2);
-        }
-      });
-    }
+    // --- 既存の受注Noとその行番号をマッピング ---
+    const lastOrderRow = orderSheet.getLastRow();
+    const existingOrderRows = new Map();
+    if (lastOrderRow > 1) {
+      const existingNosData = orderSheet.getRange(2, 1, lastOrderRow - 1, 1).getDisplayValues();
+      existingNosData.forEach((row, index) => {
+        if (row[0]) {
+          existingOrderRows.set(row[0].trim(), index + 2);
+        }
+      });
+    }
 
-    // --- ヘッダーを列番号とマッピング ---
-    const orderHeaderMap = new Map(orderSheet.getRange(1, 1, 1, orderSheet.getLastColumn()).getValues()[0].map((h, i) => [h.trim(), i + 1]));
-    const detailHeaderMap = new Map(detailSheet.getRange(1, 1, 1, detailSheet.getLastColumn()).getValues()[0].map((h, i) => [h.trim(), i + 1]));
+    // --- ヘッダーを列番号とマッピング ---
+    const orderHeaderMap = new Map(orderSheet.getRange(1, 1, 1, orderSheet.getLastColumn()).getValues()[0].map((h, i) => [h.trim(), i + 1]));
+    const detailHeaderMap = new Map(detailSheet.getRange(1, 1, 1, detailSheet.getLastColumn()).getValues()[0].map((h, i) => [h.trim(), i + 1]));
 
-    // --- 解析済みデータから受注Noごとにグループ化 ---
-    const ordersFromFile = new Map();
-    const detailsFromFile = new Map();
+    // --- 解析済みデータから受注Noごとにグループ化 ---
+    const ordersFromFile = new Map();
+    const detailsFromFile = new Map();
 
-    dataRowsAsObjects.forEach((rowData, index) => {
-      const orderNo = (rowData['受注No'] || '').trim();
-      if (!orderNo) return;
+    dataRowsAsObjects.forEach((rowData, index) => {
+      const orderNo = (rowData['受注No'] || '').trim();
+      if (!orderNo) return; // ここで0件になっていた
       
       // --- ■変更：直送先マスタから情報を取得して上書き ---
       const deliveryCode = (rowData['直送先コード'] || '').trim();
@@ -85,127 +95,127 @@ function processCsvData(csvData) {
       }
       // --- ここまで ---
 
-      if (!ordersFromFile.has(orderNo)) {
-        ordersFromFile.set(orderNo, rowData);
-      }
-      if (!detailsFromFile.has(orderNo)) {
-        detailsFromFile.set(orderNo, []);
-      }
-      rowData['受注明細No'] = `${orderNo}-${index + 1}`;
-      detailsFromFile.get(orderNo).push(rowData);
-    });
+      if (!ordersFromFile.has(orderNo)) {
+        ordersFromFile.set(orderNo, rowData);
+      }
+      if (!detailsFromFile.has(orderNo)) {
+        detailsFromFile.set(orderNo, []);
+      }
+      rowData['受注明細No'] = `${orderNo}-${index + 1}`;
+      detailsFromFile.get(orderNo).push(rowData);
+    });
 
-    // --- 更新対象の既存明細を削除 ---
-    const rowsToDelete = [];
-    const lastDetailRow = detailSheet.getLastRow();
-    if (lastDetailRow > 1) {
-      const detailOrderNosData = detailSheet.getRange(2, 2, lastDetailRow - 1, 1).getDisplayValues();
-      detailOrderNosData.forEach((row, index) => {
-        const orderNoInDetail = (row[0] || '').trim();
-        if (orderNoInDetail && ordersFromFile.has(orderNoInDetail)) {
-          rowsToDelete.push(index + 2);
-        }
-      });
-    }
+    // --- 更新対象の既存明細を削除 ---
+    const rowsToDelete = [];
+    const lastDetailRow = detailSheet.getLastRow();
+    if (lastDetailRow > 1) {
+      const detailOrderNosData = detailSheet.getRange(2, 2, lastDetailRow - 1, 1).getDisplayValues();
+      detailOrderNosData.forEach((row, index) => {
+        const orderNoInDetail = (row[0] || '').trim();
+        if (orderNoInDetail && ordersFromFile.has(orderNoInDetail)) {
+          rowsToDelete.push(index + 2);
+        }
+      });
+    }
 
-    // 行がずれないように、後ろの行から削除
-    rowsToDelete.sort((a, b) => b - a).forEach(rowNum => {
-      detailSheet.deleteRow(rowNum);
-    });
+    // 行がずれないように、後ろの行から削除
+    rowsToDelete.sort((a, b) => b - a).forEach(rowNum => {
+      detailSheet.deleteRow(rowNum);
+    });
     if (rowsToDelete.length > 0) {
       SpreadsheetApp.flush(); 
     }
-    
-    // --- データの書き込み処理 ---
-    const ordersToAppend = [];
-    let detailsToAppend = [];
+    
+    // --- データの書き込み処理 ---
+    const ordersToAppend = [];
+    let detailsToAppend = [];
 
-    ordersFromFile.forEach((orderData, orderNo) => {
-      if (existingOrderRows.has(orderNo)) {
-        const targetRow = existingOrderRows.get(orderNo);
-        const existingRowValues = orderSheet.getRange(targetRow, 1, 1, orderSheet.getLastColumn()).getDisplayValues()[0];
-        
+    ordersFromFile.forEach((orderData, orderNo) => {
+      if (existingOrderRows.has(orderNo)) {
+        const targetRow = existingOrderRows.get(orderNo);
+        const existingRowValues = orderSheet.getRange(targetRow, 1, 1, orderSheet.getLastColumn()).getDisplayValues()[0];
+        
         // ■変更：更新時にもマスタからの値が反映されるように修正
         const allUpdateHeaders = [...new Set([...textHeaders, '郵便番号', '住所１', '住所２', '会社TEL'])];
-        allUpdateHeaders.forEach(header => {
-          if (orderHeaderMap.has(header) && orderData.hasOwnProperty(header)) {
-            const colIndex = orderHeaderMap.get(header);
-            const newValue = orderData[header];
-            const existingValue = existingRowValues[colIndex - 1]; 
+        allUpdateHeaders.forEach(header => {
+          if (orderHeaderMap.has(header) && orderData.hasOwnProperty(header)) {
+            const colIndex = orderHeaderMap.get(header);
+            const newValue = orderData[header];
+            const existingValue = existingRowValues[colIndex - 1]; 
 
-            if (newValue != existingValue) {
-               orderSheet.getRange(targetRow, colIndex).setValue(newValue);
-            }
-          }
-        });
-      } else {
-        ordersToAppend.push(orderData);
-      }
-      const details = detailsFromFile.get(orderNo) || [];
-      detailsToAppend = detailsToAppend.concat(details);
-    });
+            if (newValue != existingValue) {
+                orderSheet.getRange(targetRow, colIndex).setValue(newValue);
+            }
+          }
+        });
+      } else {
+        ordersToAppend.push(orderData);
+      }
+      const details = detailsFromFile.get(orderNo) || [];
+      detailsToAppend = detailsToAppend.concat(details);
+    });
 
-    // 新規受注データをまとめて書き込み
-    if (ordersToAppend.length > 0) {
-      const startRow = findFirstEmptyRow(orderSheet);
-      const orderColumnsToWrite = new Map();
-      const allOrderPossibleHeaders = [...new Set([...textHeaders, '郵便番号', '住所１', '住所２', '会社TEL'])];
-      allOrderPossibleHeaders.forEach(header => {
-        if (orderHeaderMap.has(header)) {
-          const colIndex = orderHeaderMap.get(header);
-          const colValues = ordersToAppend.map(order => [order.hasOwnProperty(header) ? order[header] : '']);
-          orderColumnsToWrite.set(colIndex, colValues);
-        }
-      });
-      orderColumnsToWrite.forEach((values, colIndex) => {
-        orderSheet.getRange(startRow, colIndex, values.length, 1).setValues(values);
-      });
-    }
+    // 新規受注データをまとめて書き込み
+    if (ordersToAppend.length > 0) {
+      const startRow = findFirstEmptyRow(orderSheet);
+      const orderColumnsToWrite = new Map();
+      const allOrderPossibleHeaders = [...new Set([...textHeaders, '郵便番号', '住所１', '住所２', '会社TEL'])];
+      allOrderPossibleHeaders.forEach(header => {
+        if (orderHeaderMap.has(header)) {
+          const colIndex = orderHeaderMap.get(header);
+          const colValues = ordersToAppend.map(order => [order.hasOwnProperty(header) ? order[header] : '']);
+          orderColumnsToWrite.set(colIndex, colValues);
+        }
+      });
+      orderColumnsToWrite.forEach((values, colIndex) => {
+        orderSheet.getRange(startRow, colIndex, values.length, 1).setValues(values);
+      });
+    }
 
-    // 全明細データをまとめて書き込み
-    if (detailsToAppend.length > 0) {
-      const startRow = findFirstEmptyRow(detailSheet);
-      const detailColumnsToWrite = new Map();
-      const allDetailPossibleHeaders = [...textHeaders, '受注明細No'];
-      allDetailPossibleHeaders.forEach(header => {
-        if (detailHeaderMap.has(header)) {
-          const colIndex = detailHeaderMap.get(header);
-          const colValues = detailsToAppend.map(detail => [detail.hasOwnProperty(header) ? detail[header] : '']);
-          detailColumnsToWrite.set(colIndex, colValues);
-        }
-      });
-      detailColumnsToWrite.forEach((values, colIndex) => {
-        detailSheet.getRange(startRow, colIndex, values.length, 1).setValues(values);
-      });
-    }
+    // 全明細データをまとめて書き込み
+    if (detailsToAppend.length > 0) {
+      const startRow = findFirstEmptyRow(detailSheet);
+      const detailColumnsToWrite = new Map();
+      const allDetailPossibleHeaders = [...textHeaders, '受注明細No'];
+      allDetailPossibleHeaders.forEach(header => {
+        if (detailHeaderMap.has(header)) {
+          const colIndex = detailHeaderMap.get(header);
+          const colValues = detailsToAppend.map(detail => [detail.hasOwnProperty(header) ? detail[header] : '']);
+          detailColumnsToWrite.set(colIndex, colValues);
+        }
+      });
+      detailColumnsToWrite.forEach((values, colIndex) => {
+        detailSheet.getRange(startRow, colIndex, values.length, 1).setValues(values);
+      });
+    }
 
-    return {
-      status: 'success',
-      ordersAdded: ordersFromFile.size,
-      detailsAdded: detailsToAppend.length
-    };
-  } catch (e) {
-    console.error(e);
-    return {
-      status: 'error',
-      message: e.message
-    };
-  }
+    return {
+      status: 'success',
+      ordersAdded: ordersFromFile.size,
+      detailsAdded: detailsToAppend.length
+    };
+  } catch (e) {
+    console.error(e);
+    return {
+      status: 'error',
+      message: e.message
+    };
+  }
 }
 
 /**
- * シートの指定された列を基準に、最初の空の行番号を見つける
- */
+ * シートの指定された列を基準に、最初の空の行番号を見つける
+ */
 function findFirstEmptyRow(sheet, column = 1) {
-  const columnValues = sheet.getRange(1, column, sheet.getMaxRows(), 1).getDisplayValues();
-  let lastRow = 0;
-  for (let i = columnValues.length - 1; i >= 0; i--) {
-    if (columnValues[i][0] !== '') {
-      lastRow = i + 1;
-      break;
-    }
-  }
-  return lastRow + 1;
+  const columnValues = sheet.getRange(1, column, sheet.getMaxRows(), 1).getDisplayValues();
+  let lastRow = 0;
+  for (let i = columnValues.length - 1; i >= 0; i--) {
+    if (columnValues[i][0] !== '') {
+      lastRow = i + 1;
+      break;
+    }
+  }
+  return lastRow + 1;
 }
 
 /**
@@ -244,4 +254,3 @@ function _createDeliveryMasterMap(sheet) {
   });
   return masterMap;
 }
-
