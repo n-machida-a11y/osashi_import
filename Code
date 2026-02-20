@@ -1,39 +1,20 @@
 /**
- * @NotOnlyCurrentDoc
- */
-
-/**
  * ■設定エリア
  */
-const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE'; // 本番用ID
+const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE';
 const ORDER_SHEET_NAME = '受注データ';
 const DETAIL_SHEET_NAME = '受注明細';
-const DELIVERY_MASTER_SHEET_NAME = '直送先マスタ';
 
-// ■ゼロ落ちを防ぎたい（文字列として扱いたい）列名のリスト
-// ここに含まれる列は、書き込み時に先頭に ' を付けて強制的に文字列とします
-const TEXT_COLUMNS = [
-  '受注No', '得意先コード', '直送先コード', '部門コード', '担当者コード', '摘要コード',
-  'FM情報No', 'FM出荷No', '郵便番号', '会社TEL', '会社FAX',
-  '伝票No', '統合先受注No', 'レンタルID',
-  '商品コード', '倉庫コード', '計算式コード', 'ﾌﾟﾛｼﾞｪｸﾄコード', 'ロットNo'
+// 商魂CSVから上書き更新しても良い列名リスト
+const SHOKON_UPDATE_COLUMNS = [
+  '商品コード', 'マスター区分', '商品名', '倉庫コード', '入数', '箱数', '数量', 
+  '単位', '単価', '受注金額', '原単価', '原価金額', '粗利益', '外税額', '内税額', 
+  '税区分', '税込区分', '備考', '標準価格', '売単価', '売価金額', '規格・型番', 
+  '色', 'ｻｲｽﾞ', '計算式コード', '税率', '伝票消費税額', 'ﾌﾟﾛｼﾞｪｸﾄコード'
 ];
 
-// ■自動入力する数式の定義
-// {ROW} → 行番号に置換
-// {DELIVERY_CODE_COL} → 「直送先コード」のある列文字(Fなど)に置換
-// {DELIVERY_NAME_COL} → 「直送先名」のある列文字(Gなど)に置換
-const AUTO_FORMULAS = {
-  '郵便番号': "=IFERROR(VLOOKUP(${DELIVERY_CODE_COL}{ROW},'直送先マスタ'!$A:$X,8),\"\")",
-  '住所１': "=IFERROR(VLOOKUP(${DELIVERY_CODE_COL}{ROW},'直送先マスタ'!$A:$X,9),\"\")",
-  '住所２': "=IFERROR(VLOOKUP(${DELIVERY_CODE_COL}{ROW},'直送先マスタ'!$A:$X,10),\"\")",
-  '会社TEL': "=IFERROR(VLOOKUP(${DELIVERY_CODE_COL}{ROW},'直送先マスタ'!$A:$X,11),\"\")",
-  '直送先コード_出荷明細': "=${DELIVERY_CODE_COL}{ROW}",
-  '直送先名称_出荷明細': "=${DELIVERY_NAME_COL}{ROW}"
-};
-
 /**
- * WebアプリのGETリクエストを処理し、HTMLを表示する
+ * WebアプリのGETリクエストを処理
  */
 function doGet(e) {
   return HtmlService.createHtmlOutputFromFile('index')
@@ -42,124 +23,63 @@ function doGet(e) {
 }
 
 /**
- * CSVデータを処理してスプレッドシートにマージ（更新・追加）する
+ * 複数のCSV/TXTデータを処理してスプレッドシートに同期する
+ * @param {string[]} csvDataArray - ファイル内容の配列
  */
-function processCsvData(csvData) {
+function processCsvData(csvDataArray) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) {
+  if (!lock.tryLock(60000)) { // 複数ファイル処理のためロック時間を長めに設定
     return { status: 'error', message: '他のユーザーが処理中です。しばらく待ってから再実行してください。' };
   }
 
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-    const orderSheet = ss.getSheetByName(ORDER_SHEET_NAME);
     const detailSheet = ss.getSheetByName(DETAIL_SHEET_NAME);
-    const deliveryMasterSheet = ss.getSheetByName(DELIVERY_MASTER_SHEET_NAME);
+    if (!detailSheet) throw new Error('受注明細シートが見つかりません。');
 
-    if (!orderSheet || !detailSheet || !deliveryMasterSheet) {
-      throw new Error('指定されたシートが見つかりません。（受注データ、受注明細、直送先マスタ）');
-    }
+    const csvDataMap = new Map(); // 受注No => 明細行配列
+    let totalDetailsProcessed = 0;
 
-    // 1. 直送先マスタの読み込み（値補完用だが今回は数式メインなので補助的）
-    const deliveryMasterMap = _createDeliveryMasterMap(deliveryMasterSheet);
-
-    // 2. CSVデータのクリーニングとパース
-    // 商魂データなどの場合、1行目にバージョン情報が入ることがあるため、ヘッダー行（受注Noを含む行）を探す
-    const rawLines = csvData.replace(/\r\n/g, '\n').split('\n');
-    let startIndex = -1;
-    
-    for (let i = 0; i < rawLines.length; i++) {
-      // 行の中に「受注No」が含まれていれば、そこをヘッダー行とみなす
-      if (rawLines[i].includes('受注No')) {
-        startIndex = i;
-        break;
+    // 1. 各ファイルの内容をパースしてMapに集約
+    csvDataArray.forEach(csvData => {
+      const rawLines = csvData.replace(/\r\n/g, '\n').split('\n');
+      let startIndex = -1;
+      for (let i = 0; i < rawLines.length; i++) {
+        if (rawLines[i].includes('受注No')) { startIndex = i; break; }
       }
-    }
+      if (startIndex === -1) return; // ヘッダーがないファイルはスキップ
 
-    if (startIndex === -1) {
-      throw new Error('CSVデータ内に「受注No」列が見つかりません。');
-    }
+      const validCsvData = rawLines.slice(startIndex).join('\n');
+      const parsedData = Utilities.parseCsv(validCsvData);
+      const csvHeaders = parsedData[0].map(h => h.trim());
+      const csvRows = parsedData.slice(1);
 
-    // ヘッダー行より前のゴミ行を削除してパース
-    const validCsvData = rawLines.slice(startIndex).join('\n');
-    const parsedData = Utilities.parseCsv(validCsvData);
-
-    if (parsedData.length < 2) {
-      throw new Error('CSVデータが空、またはヘッダーしかありません。');
-    }
-
-    const csvHeaders = parsedData[0].map(h => h.trim());
-    const csvRows = parsedData.slice(1);
-
-    // ★追加: デバッグ用チェック（CSVに必須列があるか）
-    if (!csvHeaders.includes('受注No')) {
-      throw new Error(`CSVファイルに「受注No」列が見つかりません。\n実際のヘッダー: [${csvHeaders.join(', ')}]`);
-    }
-
-    // ★追加: スプレッドシートのヘッダーチェック
-    _checkSheetHeader(orderSheet, '受注No');
-    _checkSheetHeader(detailSheet, '受注明細No');
-
-    // 3. データ前処理
-    const processedOrders = new Map();
-    const processedDetails = [];
-    const orderLineCounters = new Map(); 
-
-    csvRows.forEach((rowArray) => {
-      const rowObj = {};
-      csvHeaders.forEach((header, i) => {
-        let val = rowArray[i] || '';
-        // ゼロ落ち対策: 文字列化
-        if (TEXT_COLUMNS.includes(header)) {
-          val = String(val).trim();
-        }
-        rowObj[header] = val;
+      csvRows.forEach(rowArray => {
+        const rowObj = {};
+        csvHeaders.forEach((h, i) => rowObj[h] = rowArray[i] || '');
+        const orderNo = rowObj['受注No'];
+        if (!orderNo) return;
+        
+        if (!csvDataMap.has(orderNo)) csvDataMap.set(orderNo, []);
+        csvDataMap.get(orderNo).push(rowObj);
+        totalDetailsProcessed++;
       });
-
-      const orderNo = rowObj['受注No'];
-      // 受注Noがない行はスキップ
-      if (!orderNo) return;
-
-      // マスタ情報の補完（数式定義にない項目のみ値を埋める保険処理）
-      const deliveryCode = rowObj['直送先コード'];
-      if (deliveryCode && deliveryMasterMap.has(deliveryCode)) {
-        const master = deliveryMasterMap.get(deliveryCode);
-        // AUTO_FORMULASにある項目は数式で入るので、ここでは値をセットしない（数式を上書きしないようにする）
-        if (!AUTO_FORMULAS['郵便番号']) rowObj['郵便番号'] = master.postalCode;
-        if (!AUTO_FORMULAS['住所１']) rowObj['住所１'] = master.address1;
-        if (!AUTO_FORMULAS['住所２']) rowObj['住所２'] = master.address2;
-        if (!AUTO_FORMULAS['会社TEL']) rowObj['会社TEL'] = master.tel;
-      }
-
-      if (!processedOrders.has(orderNo)) {
-        processedOrders.set(orderNo, rowObj);
-      }
-
-      let count = orderLineCounters.get(orderNo) || 0;
-      count++;
-      orderLineCounters.set(orderNo, count);
-      
-      rowObj['受注明細No'] = `${orderNo}-${count}`;
-      processedDetails.push(rowObj);
     });
 
-    if (processedOrders.size === 0) {
-      return { status: 'error', message: 'CSVから有効なデータ（受注Noがある行）を読み取れませんでした。' };
+    if (csvDataMap.size === 0) {
+      throw new Error('有効な受注データが見つかりませんでした。');
     }
 
-    // 4. マージ処理実行
-    const orderResult = _mergeDataToSheet(orderSheet, Array.from(processedOrders.values()), '受注No');
-    const detailResult = _mergeDataToSheet(detailSheet, processedDetails, '受注明細No');
-
-    let warningMsg = "";
-    if (orderResult.missingColumns.length > 0) warningMsg += `\n【受注データ】未反映列: ${orderResult.missingColumns.join(', ')}`;
-    if (detailResult.missingColumns.length > 0) warningMsg += `\n【受注明細】未反映列: ${detailResult.missingColumns.join(', ')}`;
+    // 2. 受注ごとに同期実行
+    csvDataMap.forEach((rows, orderNo) => {
+      _syncOrderDetails(detailSheet, orderNo, rows);
+    });
 
     return {
       status: 'success',
-      ordersAdded: processedOrders.size,
-      detailsAdded: processedDetails.length,
-      message: warningMsg ? `完了しましたが、シートに列がないため一部スキップされました。${warningMsg}` : null
+      ordersAdded: csvDataMap.size,
+      detailsAdded: totalDetailsProcessed, // undefined修正：明細総件数を返す
+      message: `完了：受注データ${csvDataMap.size}件、受注明細${totalDetailsProcessed}件を同期しました。`
     };
 
   } catch (e) {
@@ -171,189 +91,93 @@ function processCsvData(csvData) {
 }
 
 /**
- * シートにヘッダー行があるか確認する
+ * 特定の受注Noの明細を完全に同期する（前回提示のロジックを流用）
  */
-function _checkSheetHeader(sheet, requiredColName) {
-  const lastCol = sheet.getLastColumn();
-  if (lastCol === 0) {
-    throw new Error(`シート「${sheet.getName()}」が空です。1行目にヘッダー（列名）を入力してください。`);
-  }
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(h => String(h).trim());
-  if (!headers.includes(requiredColName)) {
-    throw new Error(`シート「${sheet.getName()}」の1行目に、必須列「${requiredColName}」が見つかりません。`);
-  }
-}
+function _syncOrderDetails(sheet, orderNo, csvRows) {
+  const fullRange = sheet.getDataRange();
+  const fullData = fullRange.getValues();
+  const headers = fullData[0].map(h => String(h).trim());
+  const colIdx = {
+    detailNo: headers.indexOf('受注明細No'),
+    orderNo: headers.indexOf('受注No'),
+    shohinCode: headers.indexOf('商品コード')
+  };
 
-/**
- * シートにデータをマージ（更新・追加）する汎用関数
- */
-function _mergeDataToSheet(sheet, dataList, keyColumnName) {
-  if (dataList.length === 0) return { missingColumns: [] };
-
-  const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
+  const existingShokonRows = [];
+  const manualRows = []; 
   
-  // シートデータ取得
-  const range = lastRow > 0 ? sheet.getRange(1, 1, lastRow, lastCol) : null;
-  const sheetValues = range ? range.getValues() : [];
-  
-  // ヘッダー行のみの場合（データ行なし）の対応
-  if (sheetValues.length === 0) {
-     throw new Error(`シート「${sheet.getName()}」のヘッダーが読み取れません。`);
-  }
-
-  const sheetHeaders = sheetValues[0].map(h => String(h).trim());
-  const keyIndex = sheetHeaders.indexOf(keyColumnName);
-
-  if (keyIndex === -1) {
-    throw new Error(`シート「${sheet.getName()}」にキー列「${keyColumnName}」が見つかりません。`);
-  }
-
-  // ★列位置の自動検出（数式の参照先用）
-  const deliveryCodeIdx = sheetHeaders.indexOf('直送先コード');
-  const deliveryNameIdx = sheetHeaders.indexOf('直送先名'); // CSVヘッダーに合わせて調整
-  
-  const deliveryCodeChar = deliveryCodeIdx !== -1 ? columnToLetter(deliveryCodeIdx + 1) : 'F'; 
-  const deliveryNameChar = deliveryNameIdx !== -1 ? columnToLetter(deliveryNameIdx + 1) : 'G'; 
-
-  // キーと行番号のマッピング
-  const keyRowMap = new Map();
-  for (let i = 1; i < sheetValues.length; i++) {
-    const key = String(sheetValues[i][keyIndex]).trim();
-    if (key) {
-      keyRowMap.set(key, i);
-    }
-  }
-
-  const newRows = [];
-  let isSheetUpdated = false;
-  const missingColumns = new Set(); 
-
-  dataList.forEach(rowObj => {
-    const key = String(rowObj[keyColumnName]).trim();
+  for (let i = 1; i < fullData.length; i++) {
+    const row = fullData[i];
+    if (String(row[colIdx.orderNo]) !== String(orderNo)) continue;
     
-    // 更新・追加対象の全カラム（CSVデータ + 自動計算式）
-    const updateColumns = new Set([...Object.keys(rowObj), ...Object.keys(AUTO_FORMULAS)]);
-
-    if (keyRowMap.has(key)) {
-      // --- 更新 ---
-      const rowIndex = keyRowMap.get(key);
-      const actualRow = rowIndex + 1;
-
-      updateColumns.forEach(colName => {
-        const colIdx = sheetHeaders.indexOf(colName);
-        if (colIdx !== -1) {
-          let newVal = "";
-
-          // ★数式列の処理
-          if (AUTO_FORMULAS[colName]) {
-            newVal = AUTO_FORMULAS[colName]
-              .replace(/\{ROW\}/g, actualRow)
-              .replace(/\{DELIVERY_CODE_COL\}/g, deliveryCodeChar)
-              .replace(/\{DELIVERY_NAME_COL\}/g, deliveryNameChar);
-          } else {
-            // 通常列
-            newVal = String(rowObj[colName]);
-            // ★ゼロ落ち対策: 対象列でかつ数値っぽい場合は ' を付与
-            if (TEXT_COLUMNS.includes(colName) && newVal !== "" && /^[0-9]+$/.test(newVal)) {
-               newVal = "'" + newVal;
-            }
-          }
-
-          const currentVal = String(sheetValues[rowIndex][colIdx]);
-          // 値が異なる場合のみ更新
-          if (currentVal !== newVal) {
-            sheetValues[rowIndex][colIdx] = newVal;
-            isSheetUpdated = true;
-          }
-        } else {
-          // シートに列がない場合
-          if (AUTO_FORMULAS[colName] || (rowObj[colName] && rowObj[colName] !== '')) {
-             missingColumns.add(colName);
-          }
-        }
-      });
-
+    const dNo = String(row[colIdx.detailNo]);
+    if (_isUuid(dNo)) {
+      manualRows.push(row); 
     } else {
-      // --- 新規追加 ---
-      const actualRow = sheetValues.length + newRows.length + 1; 
-      const newRow = new Array(sheetHeaders.length).fill('');
-      
-      sheetHeaders.forEach((header, colIdx) => {
-        if (AUTO_FORMULAS[header]) {
-           // ★数式列
-           newRow[colIdx] = AUTO_FORMULAS[header]
-              .replace(/\{ROW\}/g, actualRow)
-              .replace(/\{DELIVERY_CODE_COL\}/g, deliveryCodeChar)
-              .replace(/\{DELIVERY_NAME_COL\}/g, deliveryNameChar);
-        } else if (rowObj.hasOwnProperty(header)) {
-           let val = String(rowObj[header]);
-           // ★ゼロ落ち対策
-           if (TEXT_COLUMNS.includes(header) && val !== "" && /^[0-9]+$/.test(val)) {
-               val = "'" + val;
-           }
-           newRow[colIdx] = val;
-        }
-      });
-      newRows.push(newRow);
+      existingShokonRows.push({ index: i, data: row, matched: false });
     }
+  }
+
+  const finalRows = [];
+  const currentMaxNum = _getMaxSerial(existingShokonRows, orderNo);
+  let newSerialCounter = currentMaxNum + 1;
+  const occurrenceCountMap = new Map();
+
+  csvRows.forEach(csvRow => {
+    const sCode = csvRow['商品コード'];
+    const count = (occurrenceCountMap.get(sCode) || 0) + 1;
+    occurrenceCountMap.set(sCode, count);
+
+    let match = _findMatch(existingShokonRows, sCode, count, colIdx.shohinCode);
+    
+    let targetRow;
+    if (match) {
+      match.matched = true;
+      targetRow = [...match.data];
+      SHOKON_UPDATE_COLUMNS.forEach(colName => {
+        const idx = headers.indexOf(colName);
+        if (idx !== -1) targetRow[idx] = csvRow[colName];
+      });
+    } else {
+      targetRow = new Array(headers.length).fill('');
+      headers.forEach((h, i) => {
+        if (csvRow[h] !== undefined) targetRow[i] = csvRow[h];
+      });
+      targetRow[colIdx.detailNo] = `${orderNo}-${newSerialCounter++}`;
+      targetRow[colIdx.orderNo] = orderNo;
+    }
+    finalRows.push(targetRow);
   });
 
-  if (isSheetUpdated) {
-    sheet.getRange(1, 1, sheetValues.length, sheetValues[0].length).setValues(sheetValues);
-  }
+  const otherOrdersRows = fullData.slice(1).filter(row => String(row[colIdx.orderNo]) !== String(orderNo));
+  const newSheetData = [headers, ...otherOrdersRows, ...finalRows, ...manualRows];
 
-  if (newRows.length > 0) {
-    const startRow = sheetValues.length + 1;
-    sheet.getRange(startRow, 1, newRows.length, newRows[0].length).setValues(newRows);
-  }
-
-  return { missingColumns: Array.from(missingColumns) };
+  sheet.clearContents();
+  sheet.getRange(1, 1, newSheetData.length, newSheetData[0].length).setValues(newSheetData);
 }
 
-/**
- * 直送先マスタシートを読み込み
- */
-function _createDeliveryMasterMap(sheet) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return new Map();
-  
-  const values = sheet.getRange(1, 1, lastRow, sheet.getLastColumn()).getValues();
-  const headers = values[0].map(h => String(h).trim());
+function _isUuid(id) {
+  if (!id) return false;
+  return id.length > 20 && id.includes('-'); 
+}
 
-  const codeIndex = headers.indexOf('直送先コード');
-  const postalCodeIndex = headers.indexOf('郵便番号');
-  const address1Index = headers.indexOf('住所１');
-  const address2Index = headers.indexOf('住所２');
-  const telIndex = headers.indexOf('会社TEL');
+function _getMaxSerial(rows, orderNo) {
+  let max = 0;
+  rows.forEach(r => {
+    const dNo = String(r.data[0]);
+    const num = parseInt(dNo.replace(orderNo + '-', ''));
+    if (!isNaN(num) && num > max) max = num;
+  });
+  return max;
+}
 
-  if (codeIndex === -1) {
-    console.warn('直送先マスタに「直送先コード」列が見つかりません。');
-    return new Map();
-  }
-
-  const masterMap = new Map();
-  for (let i = 1; i < values.length; i++) {
-    const row = values[i];
-    const deliveryCode = String(row[codeIndex]).trim();
-    if (deliveryCode) {
-      masterMap.set(deliveryCode, {
-        postalCode: postalCodeIndex > -1 ? row[postalCodeIndex] : '',
-        address1: address1Index > -1 ? row[address1Index] : '',
-        address2: address2Index > -1 ? row[address2Index] : '',
-        tel: telIndex > -1 ? row[telIndex] : '',
-      });
+function _findMatch(existingRows, shohinCode, occurrence, codeIdx) {
+  let foundCount = 0;
+  for (let row of existingRows) {
+    if (String(row.data[codeIdx]) === String(shohinCode)) {
+      foundCount++;
+      if (foundCount === occurrence) return row;
     }
   }
-  return masterMap;
-}
-
-function columnToLetter(column) {
-  let temp, letter = '';
-  while (column > 0) {
-    temp = (column - 1) % 26;
-    letter = String.fromCharCode(temp + 65) + letter;
-    column = (column - temp - 1) / 26;
-  }
-  return letter;
+  return null;
 }
