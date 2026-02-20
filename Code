@@ -1,17 +1,31 @@
 /**
+ * @NotOnlyCurrentDoc
+ */
+
+/**
  * ■設定エリア
  */
 const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE';
 const ORDER_SHEET_NAME = '受注データ';
 const DETAIL_SHEET_NAME = '受注明細';
+const TOKUISAKI_MASTER_SHEET_NAME = '得意先マスタ';
 
 // 商魂CSVから上書き更新しても良い列名リスト
 const SHOKON_UPDATE_COLUMNS = [
-  '商品コード', 'マスター区分', '商品名', '倉庫コード', '入数', '箱数', '数量', 
-  '単位', '単価', '受注金額', '原単価', '原価金額', '粗利益', '外税額', '内税額', 
-  '税区分', '税込区分', '備考', '標準価格', '売単価', '売価金額', '規格・型番', 
+  '商品コード', 'マスター区分', '商品名', '倉庫コード', '入数', '箱数', '数量',
+  '単位', '単価', '受注金額', '原単価', '原価金額', '粗利益', '外税額', '内税額',
+  '税区分', '税込区分', '備考', '標準価格', '売単価', '売価金額', '規格・型番',
   '色', 'ｻｲｽﾞ', '計算式コード', '税率', '伝票消費税額', 'ﾌﾟﾛｼﾞｪｸﾄコード'
 ];
+
+// 受注データシートへの自動VLOOKUP数式（得意先マスタから）
+const AUTO_FORMULAS_ORDER = {
+  '得意先名２': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,3),\"\")",
+  '請求締日':   "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,39),\"\")",
+  '回収種別１': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,40),\"\")",
+  '回収種別２': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,41),\"\")",
+  '回収日':     "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,42),\"\")",
+};
 
 /**
  * WebアプリのGETリクエストを処理
@@ -28,16 +42,18 @@ function doGet(e) {
  */
 function processCsvData(csvDataArray) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(60000)) { // 複数ファイル処理のためロック時間を長めに設定
+  if (!lock.tryLock(60000)) {
     return { status: 'error', message: '他のユーザーが処理中です。しばらく待ってから再実行してください。' };
   }
 
   try {
     const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const orderSheet = ss.getSheetByName(ORDER_SHEET_NAME);
     const detailSheet = ss.getSheetByName(DETAIL_SHEET_NAME);
-    if (!detailSheet) throw new Error('受注明細シートが見つかりません。');
+    if (!orderSheet || !detailSheet) throw new Error('受注データまたは受注明細シートが見つかりません。');
 
-    const csvDataMap = new Map(); // 受注No => 明細行配列
+    const csvDataMap = new Map();  // 受注No => 明細行配列
+    const orderRowMap = new Map(); // 受注No => 受注ヘッダー行（受注Noごとの最初の行）
     let totalDetailsProcessed = 0;
 
     // 1. 各ファイルの内容をパースしてMapに集約
@@ -59,8 +75,11 @@ function processCsvData(csvDataArray) {
         csvHeaders.forEach((h, i) => rowObj[h] = rowArray[i] || '');
         const orderNo = rowObj['受注No'];
         if (!orderNo) return;
-        
-        if (!csvDataMap.has(orderNo)) csvDataMap.set(orderNo, []);
+
+        if (!csvDataMap.has(orderNo)) {
+          csvDataMap.set(orderNo, []);
+          orderRowMap.set(orderNo, rowObj); // 受注ヘッダーとして最初の行を保存
+        }
         csvDataMap.get(orderNo).push(rowObj);
         totalDetailsProcessed++;
       });
@@ -70,7 +89,12 @@ function processCsvData(csvDataArray) {
       throw new Error('有効な受注データが見つかりませんでした。');
     }
 
-    // 2. 受注ごとに同期実行
+    // 2. 受注データシートを更新（得意先マスタVLOOKUP含む）
+    csvDataMap.forEach((rows, orderNo) => {
+      _syncOrderRow(orderSheet, orderNo, orderRowMap.get(orderNo));
+    });
+
+    // 3. 受注明細シートを同期
     csvDataMap.forEach((rows, orderNo) => {
       _syncOrderDetails(detailSheet, orderNo, rows);
     });
@@ -78,7 +102,7 @@ function processCsvData(csvDataArray) {
     return {
       status: 'success',
       ordersAdded: csvDataMap.size,
-      detailsAdded: totalDetailsProcessed, // undefined修正：明細総件数を返す
+      detailsAdded: totalDetailsProcessed,
       message: `完了：受注データ${csvDataMap.size}件、受注明細${totalDetailsProcessed}件を同期しました。`
     };
 
@@ -91,7 +115,67 @@ function processCsvData(csvDataArray) {
 }
 
 /**
- * 特定の受注Noの明細を完全に同期する（前回提示のロジックを流用）
+ * 受注データシートの該当受注Noの行を更新または追加し、得意先マスタVLOOKUP数式を設定する
+ */
+function _syncOrderRow(sheet, orderNo, csvRow) {
+  const fullRange = sheet.getDataRange();
+  const fullData = fullRange.getValues();
+  const headers = fullData[0].map(h => String(h).trim());
+
+  const orderNoIdx = headers.indexOf('受注No');
+  if (orderNoIdx === -1) throw new Error('受注データシートに「受注No」列が見つかりません。');
+
+  const tokuisakiCodeIdx = headers.indexOf('得意先コード');
+  const tokuisakiCodeChar = tokuisakiCodeIdx !== -1 ? _columnToLetter(tokuisakiCodeIdx + 1) : 'D';
+
+  // 既存行を検索
+  let targetRowIndex = -1;
+  for (let i = 1; i < fullData.length; i++) {
+    if (String(fullData[i][orderNoIdx]) === String(orderNo)) {
+      targetRowIndex = i;
+      break;
+    }
+  }
+
+  let actualRow;
+  let rowData;
+
+  if (targetRowIndex !== -1) {
+    // 更新: 既存行をベースにCSV値で上書き（AUTO_FORMULAS列を除く）
+    actualRow = targetRowIndex + 1;
+    rowData = [...fullData[targetRowIndex]];
+    headers.forEach((colName, colIdx) => {
+      if (!AUTO_FORMULAS_ORDER[colName] && csvRow[colName] !== undefined) {
+        rowData[colIdx] = csvRow[colName];
+      }
+    });
+  } else {
+    // 新規追加
+    actualRow = fullData.length + 1;
+    rowData = new Array(headers.length).fill('');
+    headers.forEach((colName, colIdx) => {
+      if (!AUTO_FORMULAS_ORDER[colName] && csvRow[colName] !== undefined) {
+        rowData[colIdx] = csvRow[colName];
+      }
+    });
+  }
+
+  // 通常列を書き込み
+  sheet.getRange(actualRow, 1, 1, headers.length).setValues([rowData]);
+
+  // AUTO_FORMULAS列に数式を設定（setValuesの後に上書き）
+  headers.forEach((colName, colIdx) => {
+    if (AUTO_FORMULAS_ORDER[colName]) {
+      const formula = AUTO_FORMULAS_ORDER[colName]
+        .replace(/\{ROW\}/g, actualRow)
+        .replace(/\{TOKUISAKI_CODE_COL\}/g, tokuisakiCodeChar);
+      sheet.getRange(actualRow, colIdx + 1).setFormula(formula);
+    }
+  });
+}
+
+/**
+ * 特定の受注Noの明細を完全に同期する
  */
 function _syncOrderDetails(sheet, orderNo, csvRows) {
   const fullRange = sheet.getDataRange();
@@ -104,18 +188,16 @@ function _syncOrderDetails(sheet, orderNo, csvRows) {
   };
 
   const existingShokonRows = [];
-  const manualRows = []; 
-  
+
   for (let i = 1; i < fullData.length; i++) {
     const row = fullData[i];
     if (String(row[colIdx.orderNo]) !== String(orderNo)) continue;
-    
+
     const dNo = String(row[colIdx.detailNo]);
-    if (_isUuid(dNo)) {
-      manualRows.push(row); 
-    } else {
+    if (!_isUuid(dNo)) {
       existingShokonRows.push({ index: i, data: row, matched: false });
     }
+    // UUID行（手動追加行）は収集しない → 再取込時に削除される
   }
 
   const finalRows = [];
@@ -128,8 +210,8 @@ function _syncOrderDetails(sheet, orderNo, csvRows) {
     const count = (occurrenceCountMap.get(sCode) || 0) + 1;
     occurrenceCountMap.set(sCode, count);
 
-    let match = _findMatch(existingShokonRows, sCode, count, colIdx.shohinCode);
-    
+    const match = _findMatch(existingShokonRows, sCode, count, colIdx.shohinCode);
+
     let targetRow;
     if (match) {
       match.matched = true;
@@ -150,7 +232,7 @@ function _syncOrderDetails(sheet, orderNo, csvRows) {
   });
 
   const otherOrdersRows = fullData.slice(1).filter(row => String(row[colIdx.orderNo]) !== String(orderNo));
-  const newSheetData = [headers, ...otherOrdersRows, ...finalRows, ...manualRows];
+  const newSheetData = [headers, ...otherOrdersRows, ...finalRows];
 
   sheet.clearContents();
   sheet.getRange(1, 1, newSheetData.length, newSheetData[0].length).setValues(newSheetData);
@@ -158,7 +240,7 @@ function _syncOrderDetails(sheet, orderNo, csvRows) {
 
 function _isUuid(id) {
   if (!id) return false;
-  return id.length > 20 && id.includes('-'); 
+  return id.length > 20 && id.includes('-');
 }
 
 function _getMaxSerial(rows, orderNo) {
@@ -173,11 +255,21 @@ function _getMaxSerial(rows, orderNo) {
 
 function _findMatch(existingRows, shohinCode, occurrence, codeIdx) {
   let foundCount = 0;
-  for (let row of existingRows) {
+  for (const row of existingRows) {
     if (String(row.data[codeIdx]) === String(shohinCode)) {
       foundCount++;
       if (foundCount === occurrence) return row;
     }
   }
   return null;
+}
+
+function _columnToLetter(column) {
+  let temp, letter = '';
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
 }
