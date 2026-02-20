@@ -21,6 +21,10 @@ const SHOKON_UPDATE_COLUMNS = [
 // 受注データシートへの自動VLOOKUP数式（得意先マスタから）
 const AUTO_FORMULAS_ORDER = {
   '得意先名２': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,3),\"\")",
+  '郵便番号':   "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,8),\"\")",
+  '住所１':     "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,9),\"\")",
+  '住所２':     "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,10),\"\")",
+  '会社TEL':   "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,11),\"\")",
   '請求締日':   "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,39),\"\")",
   '回収種別１': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,40),\"\")",
   '回収種別２': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,41),\"\")",
