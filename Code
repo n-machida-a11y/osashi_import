@@ -115,6 +115,39 @@ function processCsvData(csvDataArray) {
       _syncOrderDetails(detailSheet, orderNo, rows);
     });
 
+    // 4. 統合元受注Noの逆引きを更新
+    // 取り込んだ受注Noを「統合先受注No」として参照している行があれば
+    // その受注Noを統合先の「統合元受注No」列に書き込む
+    try {
+      const allData = orderSheet.getDataRange().getValues();
+      const hdrs = allData[0].map(h => String(h).trim());
+      const oIdx = hdrs.indexOf('受注No');
+      const intToIdx = hdrs.indexOf('統合先受注No');
+      const intFromIdx = hdrs.indexOf('統合元受注No');
+      if (intToIdx > -1 && intFromIdx > -1 && oIdx > -1) {
+        // 統合先受注No → [源受注Noリスト] のマップを構築
+        const reverseMap = {};
+        for (let i = 1; i < allData.length; i++) {
+          const target = String(allData[i][intToIdx] || '').trim();
+          const src    = String(allData[i][oIdx]     || '').trim();
+          if (target && src) {
+            if (!reverseMap[target]) reverseMap[target] = [];
+            if (!reverseMap[target].includes(src)) reverseMap[target].push(src);
+          }
+        }
+        // 今回取り込んだ受注Noが統合先として参照されていれば書き込む
+        csvDataMap.forEach((_, importedNo) => {
+          if (!reverseMap[importedNo]) return;
+          for (let i = 1; i < allData.length; i++) {
+            if (String(allData[i][oIdx]).trim() === importedNo) {
+              orderSheet.getRange(i + 1, intFromIdx + 1).setValue(reverseMap[importedNo].join(','));
+              break;
+            }
+          }
+        });
+      }
+    } catch(e) { console.error('統合元受注No更新エラー:', e); }
+
     return {
       status: 'success',
       ordersAdded: csvDataMap.size,
