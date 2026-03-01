@@ -9,6 +9,7 @@ const SPREADSHEET_ID = '1L2DgOm3gfEZMwoe2TDjzBJuq5cHB2SlBlwg6vifg5IE';
 const ORDER_SHEET_NAME = '受注データ';
 const DETAIL_SHEET_NAME = '受注明細';
 const TOKUISAKI_MASTER_SHEET_NAME = '得意先マスタ';
+const JIKASO_MASTER_SHEET_NAME = '直送先マスタ';
 
 // 商魂CSVから上書き更新しても良い列名リスト
 const SHOKON_UPDATE_COLUMNS = [
@@ -29,6 +30,14 @@ const AUTO_FORMULAS_ORDER = {
   '回収種別１': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,40),\"\")",
   '回収種別２': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,41),\"\")",
   '回収日':     "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AP,42),\"\")",
+  '種別境界額': "=IFERROR(VLOOKUP(${TOKUISAKI_CODE_COL}{ROW},'得意先マスタ'!$A:$AU,47),\"\")",
+};
+
+// 受注データシートへの自動VLOOKUP数式（直送先マスタから）
+const AUTO_FORMULAS_ORDER_JIKASO = {
+  '直送先名':   "=IFERROR(VLOOKUP(${JIKASO_CODE_COL}{ROW},'直送先マスタ'!$A:$B,2),\"\")",
+  '直送先名２': "=IFERROR(VLOOKUP(${JIKASO_CODE_COL}{ROW},'直送先マスタ'!$A:$C,3),\"\")",
+  '先方担当者': "=IFERROR(VLOOKUP(${JIKASO_CODE_COL}{ROW},'直送先マスタ'!$A:$M,13),\"\")",
 };
 
 /**
@@ -132,6 +141,9 @@ function _syncOrderRow(sheet, orderNo, csvRow) {
   const tokuisakiCodeIdx = headers.indexOf('得意先コード');
   const tokuisakiCodeChar = tokuisakiCodeIdx !== -1 ? _columnToLetter(tokuisakiCodeIdx + 1) : 'D';
 
+  const jikasoCodeIdx = headers.indexOf('直送先コード');
+  const jikasoCodeChar = jikasoCodeIdx !== -1 ? _columnToLetter(jikasoCodeIdx + 1) : '';
+
   // 既存行を検索
   let targetRowIndex = -1;
   for (let i = 1; i < fullData.length; i++) {
@@ -149,7 +161,7 @@ function _syncOrderRow(sheet, orderNo, csvRow) {
     actualRow = targetRowIndex + 1;
     rowData = [...fullData[targetRowIndex]];
     headers.forEach((colName, colIdx) => {
-      if (!AUTO_FORMULAS_ORDER[colName] && csvRow[colName] !== undefined) {
+      if (!AUTO_FORMULAS_ORDER[colName] && !AUTO_FORMULAS_ORDER_JIKASO[colName] && csvRow[colName] !== undefined) {
         rowData[colIdx] = csvRow[colName];
       }
     });
@@ -158,7 +170,7 @@ function _syncOrderRow(sheet, orderNo, csvRow) {
     actualRow = fullData.length + 1;
     rowData = new Array(headers.length).fill('');
     headers.forEach((colName, colIdx) => {
-      if (!AUTO_FORMULAS_ORDER[colName] && csvRow[colName] !== undefined) {
+      if (!AUTO_FORMULAS_ORDER[colName] && !AUTO_FORMULAS_ORDER_JIKASO[colName] && csvRow[colName] !== undefined) {
         rowData[colIdx] = csvRow[colName];
       }
     });
@@ -173,6 +185,12 @@ function _syncOrderRow(sheet, orderNo, csvRow) {
       const formula = AUTO_FORMULAS_ORDER[colName]
         .replace(/\{ROW\}/g, actualRow)
         .replace(/\{TOKUISAKI_CODE_COL\}/g, tokuisakiCodeChar);
+      sheet.getRange(actualRow, colIdx + 1).setFormula(formula);
+    }
+    if (AUTO_FORMULAS_ORDER_JIKASO[colName]) {
+      const formula = AUTO_FORMULAS_ORDER_JIKASO[colName]
+        .replace(/\{ROW\}/g, actualRow)
+        .replace(/\{JIKASO_CODE_COL\}/g, jikasoCodeChar);
       sheet.getRange(actualRow, colIdx + 1).setFormula(formula);
     }
   });
