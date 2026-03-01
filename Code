@@ -41,44 +41,6 @@ const AUTO_FORMULAS_ORDER_JIKASO = {
 };
 
 /**
- * 受注データシートの全既存行にマスタVLOOKUP数式を一括適用する（手動実行用）
- */
-function applyMasterFormulasToAll() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(ORDER_SHEET_NAME);
-  if (!sheet) throw new Error('受注データシートが見つかりません。');
-
-  const fullData = sheet.getDataRange().getValues();
-  const headers = fullData[0].map(h => String(h).trim());
-
-  const tokuisakiCodeIdx = headers.indexOf('得意先コード');
-  const tokuisakiCodeChar = tokuisakiCodeIdx !== -1 ? _columnToLetter(tokuisakiCodeIdx + 1) : 'D';
-
-  const jikasoCodeIdx = headers.indexOf('直送先コード');
-  const jikasoCodeChar = jikasoCodeIdx !== -1 ? _columnToLetter(jikasoCodeIdx + 1) : '';
-
-  for (let i = 1; i < fullData.length; i++) {
-    const actualRow = i + 1;
-    headers.forEach((colName, colIdx) => {
-      if (AUTO_FORMULAS_ORDER[colName]) {
-        const formula = AUTO_FORMULAS_ORDER[colName]
-          .replace(/\{ROW\}/g, actualRow)
-          .replace(/\{TOKUISAKI_CODE_COL\}/g, tokuisakiCodeChar);
-        sheet.getRange(actualRow, colIdx + 1).setFormula(formula);
-      }
-      if (AUTO_FORMULAS_ORDER_JIKASO[colName]) {
-        const formula = AUTO_FORMULAS_ORDER_JIKASO[colName]
-          .replace(/\{ROW\}/g, actualRow)
-          .replace(/\{JIKASO_CODE_COL\}/g, jikasoCodeChar);
-        sheet.getRange(actualRow, colIdx + 1).setFormula(formula);
-      }
-    });
-  }
-
-  SpreadsheetApp.getUi().alert(`完了：${fullData.length - 1}行にマスタ数式を適用しました。`);
-}
-
-/**
  * WebアプリのGETリクエストを処理
  */
 function doGet(e) {
