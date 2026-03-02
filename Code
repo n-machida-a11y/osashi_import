@@ -209,13 +209,15 @@ function _syncOrderRow(sheet, orderNo, csvRow, tokuisakiMap, jikasoMap) {
     });
   }
 
-  // マスタ値を上書き
+  // マスタ値を上書き（マスタに値があれば上書き、空の場合は既存値を保持）
   headers.forEach((colName, colIdx) => {
     if (MASTER_COLS_TOKUISAKI[colName] !== undefined) {
-      rowData[colIdx] = tokuisakiMaster[MASTER_COLS_TOKUISAKI[colName] - 1] ?? '';
+      const val = tokuisakiMaster[MASTER_COLS_TOKUISAKI[colName] - 1];
+      if (val !== undefined && val !== '') rowData[colIdx] = val;
     }
     if (MASTER_COLS_JIKASO[colName] !== undefined) {
-      rowData[colIdx] = jikasoMaster[MASTER_COLS_JIKASO[colName] - 1] ?? '';
+      const val = jikasoMaster[MASTER_COLS_JIKASO[colName] - 1];
+      if (val !== undefined && val !== '') rowData[colIdx] = val;
     }
   });
 
